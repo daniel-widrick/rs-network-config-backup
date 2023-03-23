@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use ssh2::Session;
+use ssh2::{Error, ErrorCode, Session};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -14,12 +14,34 @@ struct HostRecord {
     address: String,
     username: String,
     password: String,
+    method: String
 }
+#[derive(Debug)]
+struct UnknownBackupMethod{
+    details: String
+}
+impl UnknownBackupMethod {
+    fn new(msg: &str) -> UnknownBackupMethod {
+        UnknownBackupMethod{details: msg.to_string()}
+    }
+}
+impl fmt::Display for UnknownBackupMethod {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f,"Unknown Backup type detected")
+    }
+}
+impl std::error::Error for UnknownBackupMethod {
+    fn description(&self) -> &str {
+        &self.details
+    }
+}
+
 
 #[derive(Debug)]
 enum BackupError {
     IOError(io::Error),
     SSHError(ssh2::Error),
+    UnknownBackupMethod(UnknownBackupMethod),
 }
 
 impl fmt::Display for BackupError {
@@ -27,6 +49,7 @@ impl fmt::Display for BackupError {
         match self {
             BackupError::IOError(io_error) => write!(f, "{}", io_error),
             BackupError::SSHError(ssh_error) => write!(f, "{}", ssh_error),
+            BackupError::UnknownBackupMethod(ube) => write!(f, "{}", ube.details)
         }
     }
 }
@@ -39,6 +62,9 @@ impl From<ssh2::Error> for BackupError {
     fn from(error: ssh2::Error) -> Self {
         BackupError::SSHError(error)
     }
+}
+impl From<UnknownBackupMethod> for BackupError {
+    fn from(error: UnknownBackupMethod) -> Self { BackupError::UnknownBackupMethod(error) }
 }
 
 fn main() {
@@ -59,16 +85,48 @@ fn main() {
     }
 }
 
-fn backup_host(host_record: &HostRecord) -> Result<(), BackupError> {
-    let backup_file_name = make_backup_file_name(&host_record.name);
+fn backup_host(host_record : &HostRecord) -> Result<(), BackupError> {
+    match host_record.method.as_ref() {
+        "Mikrotik-Binary" => return backup_mikrotik_binary_host(host_record),
+        "Mikrotik-Export" => return backup_mikrotik_export_host(host_record),
+        _ => return Err(UnknownBackupMethod::new(format!("Unknown Method: {}",host_record.method).as_str() ))?,
+    };
+}
 
+
+fn ssh_connect(host_record: &HostRecord, mut sess: &mut Session) -> Result<(), BackupError> {
     //Establish SSH Connection
     let tcp = TcpStream::connect(&host_record.address)?;
-    let mut sess = Session::new()?;
     sess.set_tcp_stream(tcp);
     sess.handshake()?;
     //Authenticate
     sess.userauth_password(&host_record.username, &host_record.password)?;
+    return Ok(());
+}
+
+fn backup_mikrotik_export_host(host_record: &HostRecord) -> Result<(), BackupError> {
+    let backup_file_name = make_backup_file_name(host_record);
+    let mut sess : Session = Session::new()?;
+    ssh_connect(host_record, &mut sess)?;
+
+    //Run Export
+    let mut channel = sess.channel_session()?;
+    channel.exec("/export show-sensitive verbose")?;
+    let mut s = String::new();
+    channel.read_to_string(&mut s)?;
+
+    //Write to File
+    let file_path = format!("{}/{}","backups",backup_file_name);
+    let mut output = File::create(file_path)?;
+    write!(output,"{}", s)?;
+    return Ok(());
+}
+
+fn backup_mikrotik_binary_host(host_record: &HostRecord) -> Result<(), BackupError> {
+    let backup_file_name = make_backup_file_name(host_record);
+    let mut sess = Session::new()?;
+    ssh_connect(host_record, &mut sess)?;
+
     //Run backup
     let backup_cmd = format!(
         "/system/backup/save name={} dont-encrypt=yes",
@@ -79,12 +137,18 @@ fn backup_host(host_record: &HostRecord) -> Result<(), BackupError> {
     let twoSecs = time::Duration::from_millis(2000);
     thread::sleep(twoSecs);
 
-    return fetch_backup(&backup_file_name, &sess);
+    fetch_backup(&backup_file_name, &sess)?;
+
+    channel = sess.channel_session()?;
+    let backup_remove_cmd = format!("/file/remove {}",backup_file_name);
+    channel.exec(&backup_remove_cmd)?;
+    return Ok(());
+
 }
-fn make_backup_file_name(hostname: &str) -> String {
+fn make_backup_file_name(host_record: &HostRecord) -> String {
     let now: DateTime<Utc> = Utc::now();
     let date_stamp = format!("{}", now.format("%Y%m%d-%H%M"));
-    return format!("{}_{}.backup", hostname, date_stamp);
+    return format!("{}_{}_{}.backup", host_record.name, host_record.method, date_stamp);
 }
 fn fetch_backup(filename: &str, sess: &Session) -> Result<(), BackupError> {
     let (mut remote_file, _) = sess.scp_recv(Path::new(filename))?;
