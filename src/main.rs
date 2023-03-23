@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
-use std::{fmt, io};
+use std::{fmt, io, thread, time};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -76,6 +76,8 @@ fn backup_host(host_record: &HostRecord) -> Result<(), BackupError> {
     );
     let mut channel = sess.channel_session()?;
     channel.exec(&backup_cmd)?;
+    let twoSecs = time::Duration::from_millis(2000);
+    thread::sleep(twoSecs);
 
     return fetch_backup(&backup_file_name, &sess);
 }
@@ -90,6 +92,7 @@ fn fetch_backup(filename: &str, sess: &Session) -> Result<(), BackupError> {
     remote_file.read_to_end(&mut contents)?;
     remote_file.send_eof()?;
     remote_file.wait_eof()?;
+    remote_file.eof();
     remote_file.close()?;
     remote_file.wait_close()?;
 
