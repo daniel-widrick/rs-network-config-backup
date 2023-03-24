@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use ssh2::{Error, ErrorCode, Session};
+use ssh2::{Error, ErrorCode, MethodType, Session, TraceFlags};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -89,6 +89,7 @@ fn backup_host(host_record : &HostRecord) -> Result<(), BackupError> {
     match host_record.method.as_ref() {
         "Mikrotik-Binary" => return backup_mikrotik_binary_host(host_record),
         "Mikrotik-Export" => return backup_mikrotik_export_host(host_record),
+        "Cisco-Export" => return backup_cisco_export_host(host_record),
         _ => return Err(UnknownBackupMethod::new(format!("Unknown Method: {}",host_record.method).as_str() ))?,
     };
 }
@@ -106,7 +107,7 @@ fn ssh_connect(host_record: &HostRecord, mut sess: &mut Session) -> Result<(), B
 
 fn backup_mikrotik_export_host(host_record: &HostRecord) -> Result<(), BackupError> {
     let backup_file_name = make_backup_file_name(host_record);
-    let mut sess : Session = Session::new()?;
+    let mut sess = Session::new()?;
     ssh_connect(host_record, &mut sess)?;
 
     //Run Export
@@ -145,6 +146,29 @@ fn backup_mikrotik_binary_host(host_record: &HostRecord) -> Result<(), BackupErr
     return Ok(());
 
 }
+
+fn backup_cisco_export_host(host_record: &HostRecord) -> Result<(), BackupError> {
+    let backup_file_name = make_backup_file_name(host_record);
+    let mut sess = Session::new()?;
+    sess.trace(TraceFlags::all());
+    ssh_connect(host_record, &mut sess).unwrap();
+    //Run Export
+    let mut channel = sess.channel_session().unwrap();
+
+    channel.exec("sh run")?;
+    let mut s : Vec<u8> = Vec::new();
+    match channel.read_to_end(&mut s) {
+        _ => {}
+    };
+    channel.send_eof().unwrap();
+
+    //Write to File
+    let file_path = format!("{}/{}","backups",backup_file_name);
+    let mut output = File::create(file_path)?;
+    write!(output,"{}", std::str::from_utf8(s.as_slice()).unwrap() )?;
+    return Ok(());
+}
+
 fn make_backup_file_name(host_record: &HostRecord) -> String {
     let now: DateTime<Utc> = Utc::now();
     let date_stamp = format!("{}", now.format("%Y%m%d-%H%M"));
