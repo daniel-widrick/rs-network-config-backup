@@ -158,7 +158,7 @@ fn backup_cisco_export_host(host_record: &HostRecord) -> Result<(), BackupError>
     channel.exec("sh run")?;
     let mut s : Vec<u8> = Vec::new();
     match channel.read_to_end(&mut s) {
-        _ => {}
+        _ => {} //TODO:: ADDRESS TRANSPORT ERROR?
     };
     channel.send_eof().unwrap();
 
