@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use ssh2::{Error, ErrorCode, MethodType, Session, TraceFlags};
+use ssh2::{Error, ErrorCode, ExtendedData, MethodType, Session, TraceFlags};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -86,10 +86,14 @@ fn main() {
 }
 
 fn backup_host(host_record : &HostRecord) -> Result<(), BackupError> {
+    if host_record.name.starts_with('#') {
+        return Ok(()); //Skip comments
+    }
     match host_record.method.as_ref() {
         "Mikrotik-Binary" => return backup_mikrotik_binary_host(host_record),
         "Mikrotik-Export" => return backup_mikrotik_export_host(host_record),
         "Cisco-Export" => return backup_cisco_export_host(host_record),
+        "HP-Export" => return backup_hp_export_host(host_record),
         _ => return Err(UnknownBackupMethod::new(format!("Unknown Method: {}",host_record.method).as_str() ))?,
     };
 }
@@ -147,25 +151,42 @@ fn backup_mikrotik_binary_host(host_record: &HostRecord) -> Result<(), BackupErr
 
 }
 
+fn backup_hp_export_host(host_record: &HostRecord) -> Result<(), BackupError> {
+    return backup_ssh_to_file(host_record,"screen-length disable\ndisplay current-configuration\n")
+}
+
 fn backup_cisco_export_host(host_record: &HostRecord) -> Result<(), BackupError> {
+    return backup_ssh_to_file(host_record,"terminal length 0\nsh run\n")
+}
+fn backup_ssh_to_file(host_record: &HostRecord,cmd: &str) -> Result<(), BackupError> {
     let backup_file_name = make_backup_file_name(host_record);
     let mut sess = Session::new()?;
-    sess.trace(TraceFlags::all());
-    ssh_connect(host_record, &mut sess).unwrap();
+    //sess.trace(TraceFlags::all());
+    ssh_connect(host_record, &mut sess)?;
     //Run Export
     let mut channel = sess.channel_session().unwrap();
+    channel.shell().unwrap();
+    let mut s = String::new();
+    channel.handle_extended_data(ExtendedData::Merge)?;
+    channel.write_all(cmd.as_bytes()).unwrap();
 
-    channel.exec("sh run")?;
-    let mut s : Vec<u8> = Vec::new();
-    match channel.read_to_end(&mut s) {
-        _ => {} //TODO:: ADDRESS TRANSPORT ERROR?
-    };
+    let twoSecs = time::Duration::from_millis(2000);
+    thread::sleep(twoSecs*5);
     channel.send_eof().unwrap();
+    match channel.read_to_string(&mut s) {
+        e => {
+            //println!("Received bytes: {}", e?);
+            //println!("{}",s);
+        } //TODO:: ADDRESS TRANSPORT ERROR?
+    }
+    channel.wait_eof()?;
+    channel.close()?;
+    channel.wait_close()?;
 
     //Write to File
     let file_path = format!("{}/{}","backups",backup_file_name);
     let mut output = File::create(file_path)?;
-    write!(output,"{}", std::str::from_utf8(s.as_slice()).unwrap() )?;
+    write!(output,"{}", s)?;
     return Ok(());
 }
 
