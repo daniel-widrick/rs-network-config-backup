@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use ssh2::{Error, ErrorCode, ExtendedData, MethodType, Session, TraceFlags};
+use ssh2::{ExtendedData, Session};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -139,8 +139,8 @@ fn backup_mikrotik_binary_host(host_record: &HostRecord) -> Result<(), BackupErr
     );
     let mut channel = sess.channel_session()?;
     channel.exec(&backup_cmd)?;
-    let twoSecs = time::Duration::from_millis(2000);
-    thread::sleep(twoSecs);
+    let wait_time = time::Duration::from_millis(2000);
+    thread::sleep(wait_time);
 
     fetch_backup(&backup_file_name, &sess)?;
 
